@@ -3,22 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#f3ece2">
+<meta name="theme-color" content="#000000">
 <title>Camera Crystal</title>
 <link rel="icon" href="data:,">
 <style>
-:root { --paper: #f3ece2; --ink: #1d1b19; --mute: #6f6a62; --bar: rgba(243,236,226,.82); --edge: rgba(0,0,0,.14); --hot: #5b3cff; }
+:root { --paper: #000; --ink: #f2f0ec; --mute: #9a958d; --bar: rgba(16,16,18,.78); --edge: rgba(255,255,255,.16); --hot: #6b4dff; }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
   margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none;
   background: var(--paper); color: var(--ink); touch-action: none;
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   font: 16px/1.4 system-ui, -apple-system, "Hiragino Sans", "Segoe UI", sans-serif;
-}
-#shadow {
-  position: fixed; left: 50%; width: 62vmin; height: 9vmin; transform: translateX(-50%);
-  border-radius: 50%; background: radial-gradient(closest-side, rgba(0,0,0,.32), rgba(0,0,0,0));
-  pointer-events: none; display: none;
 }
 #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 #cam { position: fixed; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
@@ -33,7 +28,7 @@ html, body {
 #start.hide { display: none; }
 #err {
   display: none; margin-top: 8px; padding: 14px 16px; border-radius: 14px;
-  background: rgba(91,60,255,.1); border: 1px solid var(--hot); white-space: pre-line;
+  background: rgba(107,77,255,.18); border: 1px solid var(--hot); white-space: pre-line;
 }
 #err.show { display: block; }
 #hint {
@@ -51,7 +46,7 @@ html, body {
 .line + .line { margin-top: 8px; }
 .line button { flex: 1; }
 button {
-  font: inherit; color: var(--ink); background: rgba(255,255,255,.55); touch-action: manipulation;
+  font: inherit; color: var(--ink); background: rgba(255,255,255,.08); touch-action: manipulation;
   border: 1px solid var(--edge); border-radius: 14px; min-height: 56px; padding: 0 8px;
 }
 button.on { background: var(--hot); border-color: var(--hot); color: #fff; }
@@ -61,14 +56,13 @@ label.knob input { width: 100%; height: 40px; accent-color: var(--hot); }
 </style>
 </head>
 <body>
-<div id="shadow"></div>
 <canvas id="stage"></canvas>
 <video id="cam" playsinline muted autoplay></video>
 <div id="hint"></div>
 
 <div id="start">
   <h1>Camera Crystal</h1>
-  <p>カメラを選ぶと、映像をランダムに切り抜いて多面体の面に貼った結晶ができます。ドラッグで回せます。映像はこの端末の外に出ません。</p>
+  <p>カメラを選ぶと、映像をランダムに切り抜いて多面体の面に貼った結晶ができます。ドラッグで回し、ピンチで寄ったり引いたりできます。映像はこの端末の外に出ません。</p>
   <button data-facing="user">インカメラ</button>
   <button data-facing="environment">アウトカメラ</button>
   <div id="err"></div>
@@ -86,26 +80,23 @@ label.knob input { width: 100%; height: 40px; accent-color: var(--hot); }
     <label class="knob"><span>筋</span><input id="streak" type="range" min="0" max="100" step="1" value="85"><output id="streakOut">85</output></label>
   </div>
   <div class="line">
-    <label class="knob"><span>面数</span><input id="cuts" type="range" min="6" max="40" step="1" value="16"><output id="cutsOut">16</output></label>
+    <label class="knob"><span>面数</span><input id="cuts" type="range" min="6" max="300" step="1" value="16"><output id="cutsOut">16</output></label>
   </div>
 </div>
 
 <script type="x-shader/x-vertex" id="vert">#version 300 es
 in vec3 aPos;
-in vec3 aNormal;
 in vec2 aLocal;   // position inside the face, about -1 .. 1
 in vec4 aCrop;    // crop centre xy (video uv), angle, size
 uniform mat4 uMVP;
-uniform mat3 uRot;
+uniform vec2 uTexScale;  // square crop -> video uv (corrects for a wide or tall video)
 uniform float uSquash;   // 1 = plain crop, small = crop squeezed in one direction -> streaks
 uniform float uShift;    // move the picture up so the dock does not hide it
 out vec2 vUV;
-out vec3 vN;
 void main() {
   float c = cos(aCrop.z), s = sin(aCrop.z);
   vec2 q = aLocal * aCrop.w * vec2(1.0, uSquash);
-  vUV = aCrop.xy + mat2(c, s, -s, c) * q;
-  vN = uRot * aNormal;
+  vUV = aCrop.xy + (mat2(c, s, -s, c) * q) * uTexScale;
   gl_Position = uMVP * vec4(aPos, 1.0);
   gl_Position.y += uShift * gl_Position.w;
 }
@@ -115,7 +106,6 @@ precision highp float;
 uniform sampler2D uVideo;
 uniform float uMirror;
 in vec2 vUV;
-in vec3 vN;
 out vec4 outColor;
 void main() {
   vec2 uv = clamp(vUV, 0.0, 1.0);
@@ -125,11 +115,6 @@ void main() {
   float g = dot(c, vec3(0.299, 0.587, 0.114));
   c = clamp(mix(vec3(g), c, 1.7), 0.0, 1.0);
   c = clamp((c - 0.5) * 1.25 + 0.5, 0.0, 1.0);
-  vec3 n = normalize(vN);
-  vec3 L = normalize(vec3(-0.5, 0.7, 0.6));
-  float d = max(dot(n, L), 0.0);
-  float spec = pow(max(dot(n, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0), 24.0);
-  c = c * (0.55 + 0.6 * d) + spec * 0.35;
   outColor = vec4(c, 1.0);
 }
 </script>
@@ -140,7 +125,7 @@ const params = new URLSearchParams(location.search);
 const TEST = params.has('test');
 
 const $ = (id) => document.getElementById(id);
-const cv = $('stage'), video = $('cam'), startEl = $('start'), errEl = $('err'), dock = $('dock'), hint = $('hint'), shadow = $('shadow');
+const cv = $('stage'), video = $('cam'), startEl = $('start'), errEl = $('err'), dock = $('dock'), hint = $('hint');
 
 function showError(text) {
   startEl.classList.remove('hide');
@@ -154,7 +139,7 @@ const gl = cv.getContext('webgl2', { antialias: true, premultipliedAlpha: false,
 let prog = null;
 const U = {};
 let vbo = null, vertCount = 0;
-const FLOATS = 12; // pos3, normal3, local2, crop4
+const FLOATS = 9; // pos3, local2, crop4
 if (!gl) {
   showError('この端末のブラウザーは WebGL2 に対応していないため表示できません。');
 } else {
@@ -169,7 +154,7 @@ if (!gl) {
     prog = gl.createProgram();
     gl.attachShader(prog, compile(gl.VERTEX_SHADER, 'vert'));
     gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, 'frag'));
-    ['aPos', 'aNormal', 'aLocal', 'aCrop'].forEach((n, i) => gl.bindAttribLocation(prog, i, n));
+    ['aPos', 'aLocal', 'aCrop'].forEach((n, i) => gl.bindAttribLocation(prog, i, n));
     gl.linkProgram(prog);
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   } catch (e) {
@@ -179,15 +164,14 @@ if (!gl) {
 }
 if (prog) {
   gl.useProgram(prog);
-  for (const k of ['uMVP', 'uRot', 'uSquash', 'uShift', 'uVideo', 'uMirror']) U[k] = gl.getUniformLocation(prog, k);
+  for (const k of ['uMVP', 'uTexScale', 'uSquash', 'uShift', 'uVideo', 'uMirror']) U[k] = gl.getUniformLocation(prog, k);
   gl.bindVertexArray(gl.createVertexArray());
   vbo = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
   const stride = FLOATS * 4;
   gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
-  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, 12);
-  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, stride, 24);
-  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, stride, 32);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 2, gl.FLOAT, false, stride, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 4, gl.FLOAT, false, stride, 20);
   const tex = gl.createTexture();
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -260,13 +244,22 @@ function clip(faces, n, d) {
   return out;
 }
 
-function makeCrystal(cuts) {
+// target: how many faces we want. Deep random cuts give the overall crystal shape, but they
+// stop adding faces at about 25 (each one also removes faces). After that, shallow cuts whose
+// depth shrinks as the faces get smaller keep adding faces all over the surface.
+function makeCrystal(target) {
   let faces = box(rand(0.6, 0.8), rand(1.05, 1.3), rand(0.5, 0.7));
-  for (let k = 0; k < cuts; k++) {
+  const support = (n) => { let far = -Infinity; for (const f of faces) for (const p of f.pts) far = Math.max(far, dot(p, n)); return far; };
+  for (let k = 0; k < Math.min(target, 14); k++) {
     const n = norm([rand(-1, 1), rand(-1, 1), rand(-1, 1)]);
-    let far = -Infinity;
-    for (const f of faces) for (const p of f.pts) far = Math.max(far, dot(p, n));
-    faces = clip(faces, n, far * rand(0.62, 0.9));
+    faces = clip(faces, n, support(n) * rand(0.62, 0.9));
+  }
+  for (let k = 0; faces.length < target && k < target * 20; k++) {
+    let R = 0;
+    for (const f of faces) for (const p of f.pts) R = Math.max(R, Math.hypot(p[0], p[1], p[2]));
+    const n = norm([rand(-1, 1), rand(-1, 1), rand(-1, 1)]);
+    const next = clip(faces, n, support(n) - rand(0.3, 1) * 0.3 * R / Math.sqrt(faces.length));
+    if (next.length >= faces.length * 0.8) faces = next; // skip a cut that would eat a big piece
   }
   return faces;
 }
@@ -287,7 +280,7 @@ function buildMesh() {
     for (const p of P) r = Math.max(r, Math.hypot(...sub(p, c)));
     const loc = P.map((p) => [dot(sub(p, c), t) / r, dot(sub(p, c), b) / r]);
     for (let i = 1; i < P.length - 1; i++) {
-      for (const j of [0, i, i + 1]) tris.push(...P[j], ...f.n, ...loc[j], ...crops[fi]);
+      for (const j of [0, i, i + 1]) tris.push(...P[j], ...loc[j], ...crops[fi]);
     }
   });
   vertCount = tris.length / FLOATS;
@@ -357,7 +350,33 @@ function explain(e) {
   return 'カメラを開けませんでした（' + (n || 'エラー') + '）。';
 }
 
-// Called directly from the button's click handler, so iOS sees it as a user action.
+// Some phones hand back a camera that will not open (a depth or tele camera), or still hold
+// the camera that was just stopped. Try the exact facing first, then each matching camera by id,
+// then a loose request that takes any camera.
+const BACK = /back|rear|environment|背面|外側/i, FRONT = /front|user|face|前面|内側/i;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+async function findCamera(want, seq) {
+  const stale = { stale: true };
+  const gum = async (constraints) => {
+    if (seq !== openSeq) throw stale; // a newer request took over: do not grab the camera from it
+    const s = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+    if (seq !== openSeq) { for (const t of s.getTracks()) t.stop(); throw stale; }
+    return s;
+  };
+  const fatal = (e) => e === stale || e.name === 'NotAllowedError' || e.name === 'SecurityError';
+  await wait(150);
+  let firstErr;
+  try { return await gum({ facingMode: { exact: want } }); } catch (e) { if (fatal(e)) throw e; firstErr = e; }
+  const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+  const pick = want === 'environment' ? BACK : FRONT;
+  for (const cam of cams.filter((d) => pick.test(d.label))) {
+    try { return await gum({ deviceId: { exact: cam.deviceId } }); } catch (e) { if (fatal(e)) throw e; }
+  }
+  try { return await gum({ facingMode: want }); } catch (e) { if (fatal(e)) throw e; }
+  throw firstErr;
+}
+
+// Called from the buttons' click handlers.
 function openCamera(want) {
   if (!prog) return;
   const seq = ++openSeq;
@@ -372,7 +391,8 @@ function openCamera(want) {
       return;
     }
     stopStream(); // release the old camera first (iOS cannot hold two)
-    req = navigator.mediaDevices.getUserMedia({ video: { facingMode: want }, audio: false });
+    video.srcObject = null;
+    req = findCamera(want, seq);
   }
   req.then((s) => {
     if (seq !== openSeq) { if (!TEST) for (const t of s.getTracks()) t.stop(); throw { stale: true }; }
@@ -385,9 +405,8 @@ function openCamera(want) {
     if (seq !== openSeq) return;
     startEl.classList.add('hide');
     dock.classList.add('show');
-    shadow.style.display = 'block';
     for (const b of dock.querySelectorAll('[data-facing]')) b.classList.toggle('on', b.dataset.facing === facing);
-    if (!hint.dataset.done) { hint.textContent = 'ドラッグで回す'; hint.style.opacity = 1; }
+    if (!hint.dataset.done) { hint.textContent = 'ドラッグで回す／ピンチで寄る'; hint.style.opacity = 1; }
   }).catch((e) => {
     if ((e && e.stale) || seq !== openSeq) return; // a newer request is in charge
     stopStream();
@@ -401,17 +420,40 @@ let yaw = 0.4, pitch = -0.15, vYaw = 0.25, vPitch = 0; // rad, rad/s
 const AUTO_SPIN = 0.25;
 let drag = null;
 
+// one finger rotates; two fingers pinch to move closer or farther
+let zoom = 1;
+const ZOOM_MIN = 0.35;
+let zoomMax = 8; // set each frame: how close the camera may get before entering the crystal
+const setZoom = (z) => { zoom = Math.max(ZOOM_MIN, Math.min(zoomMax, z)); return zoom !== z; };
+const touches = new Map(); // pointerId -> {x, y}
+let pinch = null;
+const spread = () => { const [a, b] = [...touches.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; };
+
 cv.addEventListener('pointerdown', (e) => {
   if (!stream) return;
   e.preventDefault();
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
-  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
-  vYaw = 0; vPitch = 0;
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (hint.textContent) { hint.style.opacity = 0; hint.dataset.done = '1'; }
+  vYaw = 0; vPitch = 0;
+  if (touches.size === 2) {
+    drag = null;
+    pinch = { d0: spread(), z0: zoom };
+  } else if (touches.size === 1) {
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
+  }
 });
 cv.addEventListener('pointermove', (e) => {
-  if (!drag || e.pointerId !== drag.id) return;
+  const p = touches.get(e.pointerId);
+  if (!p) return;
   e.preventDefault();
+  p.x = e.clientX; p.y = e.clientY;
+  if (pinch && touches.size >= 2) {
+    // at a limit, restart from here so turning the pinch back reacts at once
+    if (setZoom(pinch.z0 * spread() / pinch.d0)) pinch = { d0: spread(), z0: zoom };
+    return;
+  }
+  if (!drag || e.pointerId !== drag.id) return;
   const now = performance.now(), dt = Math.max((now - drag.t) / 1000, 1 / 240);
   const k = 4 / Math.min(viewW, viewH);
   const dy = (e.clientX - drag.x) * k, dp = (e.clientY - drag.y) * k;
@@ -420,12 +462,27 @@ cv.addEventListener('pointermove', (e) => {
   drag.x = e.clientX; drag.y = e.clientY; drag.t = now;
 });
 function release(e) {
+  if (!touches.delete(e.pointerId)) return;
+  if (pinch) {
+    pinch = touches.size >= 2 ? { d0: spread(), z0: zoom } : null; // e.g. a third finger was down
+    // the finger left on the glass carries on rotating from where it is, without a jump
+    if (touches.size === 1) {
+      const [id, q] = [...touches.entries()][0];
+      drag = { id, x: q.x, y: q.y, t: performance.now() };
+    }
+    return;
+  }
   if (!drag || e.pointerId !== drag.id) return;
   if (performance.now() - drag.t > 80) { vYaw = 0; vPitch = 0; } // held still before letting go
   drag = null;
 }
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
+cv.addEventListener('wheel', (e) => { // mouse wheel / trackpad on a PC
+  if (!stream) return;
+  e.preventDefault();
+  setZoom(zoom * Math.exp(-e.deltaY * 0.0015));
+}, { passive: false });
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('dblclick', (e) => e.preventDefault());
 
@@ -489,7 +546,7 @@ function frame(now) {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   if (!stream) return;
 
-  if (!drag) {
+  if (!drag && !pinch) {
     // a fling slows down, then the slow automatic spin takes over again
     const damp = Math.exp(-dt * 2.2);
     vYaw = AUTO_SPIN + (vYaw - AUTO_SPIN) * damp;
@@ -502,30 +559,30 @@ function frame(now) {
   const usableH = Math.max(viewH - dockH, viewH * 0.4);
   const aspect = viewW / viewH;
   const fitH = usableH / viewH;  // the crystal should fit in the part above the dock
-  const dist = radius / (Math.tan(FOV / 2) * Math.min(aspect, fitH)) * 1.08;
+  // pinch zoom moves the camera; it stops just short of the crystal's surface
+  const fitDist = radius / (Math.tan(FOV / 2) * Math.min(aspect, fitH)) * 1.08;
+  zoomMax = Math.min(8, fitDist / (radius + 0.12));
+  zoom = Math.min(zoom, zoomMax);
+  const dist = fitDist / zoom;
   const proj = perspective(FOV, aspect, 0.1, 100);
   const R = rotation(yaw, pitch);
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -dist, 1]);
   const mvp = mul(proj, mul(view, R));
   const shift = dockH / viewH; // clip-space units: half the dock height, times two
   gl.uniformMatrix4fv(U.uMVP, false, mvp);
-  gl.uniformMatrix3fv(U.uRot, false, new Float32Array([R[0], R[1], R[2], R[4], R[5], R[6], R[8], R[9], R[10]]));
+  const va = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 1;
+  gl.uniform2f(U.uTexScale, va > 1 ? 1 / va : 1, va > 1 ? 1 : va);
   gl.uniform1f(U.uSquash, squash);
   gl.uniform1f(U.uShift, shift);
   gl.uniform1f(U.uMirror, mirror ? 1 : 0);
   gl.drawArrays(gl.TRIANGLES, 0, vertCount);
-
-  // floor shadow just under the crystal
-  const centreY = (1 - shift) * viewH / 2;
-  const sz = radius / dist / Math.tan(FOV / 2) * viewH / 2;
-  shadow.style.top = (centreY + sz * 0.8) + 'px';
 }
 if (prog) {
   newShape();
   requestAnimationFrame(frame);
 }
 
-if (TEST) window.__cc = { get faces() { return faces; }, newShape, reCrop, setStreak };
+if (TEST) window.__cc = { get faces() { return faces; }, get zoom() { return zoom; }, newShape, reCrop, setStreak, setZoom };
 </script>
 </body>
 </html>
