@@ -61,6 +61,15 @@ button.on { background: var(--hot); border-color: var(--hot); color: #fff; }
 label.knob { flex: 1; display: grid; grid-template-columns: 3.6em 1fr 2.4em; gap: 10px; align-items: center; min-height: 36px; }
 label.knob output { text-align: right; color: var(--mute); font-variant-numeric: tabular-nums; }
 label.knob input { width: 100%; height: 36px; accent-color: var(--hot); }
+/* landscape phone: two columns and lower buttons, so the panel does not cover the crystal */
+@media (max-height: 520px) {
+  #dock.show { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; row-gap: 2px; padding-top: 8px; }
+  #dock .line + .line { margin-top: 0; }
+  #dock .line:first-of-type { grid-column: 1 / -1; }
+  #dock button:not(#toggle) { min-height: 40px; }
+  label.knob { min-height: 32px; }
+  label.knob input { height: 32px; }
+}
 </style>
 </head>
 <body>
@@ -86,7 +95,14 @@ label.knob input { width: 100%; height: 36px; accent-color: var(--hot); }
     <button id="freeze">Freeze</button>
   </div>
   <div class="line">
-    <label class="knob"><span>Streak</span><input id="streak" type="range" min="0" max="100" step="1" value="85"><output id="streakOut">85</output></label>
+    <button id="flat" class="on">Flat</button>
+    <button id="mirror" class="on">Mirror</button>
+  </div>
+  <div class="line">
+    <label class="knob"><span>Streak</span><input id="streak" type="range" min="0" max="100" step="1" value="95"><output id="streakOut">95</output></label>
+  </div>
+  <div class="line">
+    <label class="knob"><span>Glass</span><input id="glass" type="range" min="0" max="100" step="1" value="40"><output id="glassOut">40</output></label>
   </div>
   <div class="line">
     <label class="knob"><span>Crop</span><input id="trim" type="range" min="1" max="100" step="1" value="20"><output id="trimOut">20</output></label>
@@ -101,11 +117,11 @@ label.knob input { width: 100%; height: 36px; accent-color: var(--hot); }
 
 <script type="x-shader/x-vertex" id="vert">#version 300 es
 in vec3 aPos;
-in vec2 aLocal;   // position inside the face, about -1 .. 1
+in vec2 aLocal;   // position inside the face, about -1 .. 1; y runs along one edge of the face
 in vec4 aCrop;    // crop centre xy (video uv), angle, size
 uniform mat4 uMVP;
 uniform vec2 uTexScale;  // square crop -> video uv (corrects for a wide or tall video)
-uniform float uSquash;   // 1 = plain crop, small = crop squeezed in one direction -> streaks
+uniform float uSquash;   // 1 = plain crop, small = crop squeezed along the edge -> streaks parallel to it
 uniform float uShift;    // move the picture up so the dock does not hide it
 out vec2 vUV;
 void main() {
@@ -120,6 +136,7 @@ void main() {
 precision highp float;
 uniform sampler2D uVideo;
 uniform float uMirror;
+uniform float uAlpha;    // below 1: the faces at the back show through the front ones
 in vec2 vUV;
 out vec4 outColor;
 void main() {
@@ -130,7 +147,7 @@ void main() {
   float g = dot(c, vec3(0.299, 0.587, 0.114));
   c = clamp(mix(vec3(g), c, 1.7), 0.0, 1.0);
   c = clamp((c - 0.5) * 1.25 + 0.5, 0.0, 1.0);
-  outColor = vec4(c, 1.0);
+  outColor = vec4(c, uAlpha);
 }
 </script>
 
@@ -179,7 +196,7 @@ if (!gl) {
 }
 if (prog) {
   gl.useProgram(prog);
-  for (const k of ['uMVP', 'uTexScale', 'uSquash', 'uShift', 'uVideo', 'uMirror']) U[k] = gl.getUniformLocation(prog, k);
+  for (const k of ['uMVP', 'uTexScale', 'uSquash', 'uShift', 'uVideo', 'uMirror', 'uAlpha']) U[k] = gl.getUniformLocation(prog, k);
   gl.bindVertexArray(gl.createVertexArray());
   vbo = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
@@ -231,6 +248,9 @@ function box(x, y, z) {
   ];
 }
 
+// a cut passing almost through a corner leaves two corners on top of each other: drop one
+const dedupe = (P) => P.filter((p, i) => Math.hypot(...sub(p, P[(i + 1) % P.length])) > 1e-7);
+
 // keep the part with dot(p, n) <= d
 function clip(faces, n, d) {
   const out = [], cut = [];
@@ -240,12 +260,14 @@ function clip(faces, n, d) {
       const a = P[i], b = P[(i + 1) % P.length];
       const da = dot(a, n) - d, db = dot(b, n) - d;
       if (da <= 0) res.push(a);
+      if (Math.abs(da) < 1e-12) cut.push(a); // a corner right on the plane is also a corner of the new face
       if ((da < 0 && db > 0) || (da > 0 && db < 0)) {
         const p = lerp3(a, b, da / (da - db));
         res.push(p); cut.push(p);
       }
     }
-    if (res.length >= 3) out.push({ n: f.n, pts: res });
+    const P2 = dedupe(res);
+    if (P2.length >= 3) out.push({ n: f.n, pts: P2 });
   }
   // the new face on the cutting plane: its corners sorted around their centre
   const uniq = [];
@@ -262,18 +284,22 @@ function clip(faces, n, d) {
 // target: how many faces we want. Deep random cuts give the overall crystal shape, but they
 // stop adding faces at about 25 (each one also removes faces). After that, shallow cuts whose
 // depth shrinks as the faces get smaller keep adding faces all over the surface.
-function makeCrystal(target) {
+// sym: every cut is repeated mirrored left-right and top-bottom, like a cut gem seen from above.
+function makeCrystal(target, sym) {
   let faces = box(rand(0.6, 0.8), rand(1.05, 1.3), rand(0.5, 0.7));
   const support = (n) => { let far = -Infinity; for (const f of faces) for (const p of f.pts) far = Math.max(far, dot(p, n)); return far; };
-  for (let k = 0; k < Math.min(target, 14); k++) {
+  const copies = (n) => sym ? [n, [-n[0], n[1], n[2]], [n[0], -n[1], n[2]], [-n[0], -n[1], n[2]]] : [n];
+  const cutAll = (F, n, d) => { for (const m of copies(n)) F = clip(F, m, d); return F; };
+  const deep = sym ? 4 : 14;
+  for (let k = 0; k < Math.min(target, deep); k++) {
     const n = norm([rand(-1, 1), rand(-1, 1), rand(-1, 1)]);
-    faces = clip(faces, n, support(n) * rand(0.62, 0.9));
+    faces = cutAll(faces, n, support(n) * rand(0.62, 0.9));
   }
   for (let k = 0; faces.length < target && k < target * 20; k++) {
     let R = 0;
     for (const f of faces) for (const p of f.pts) R = Math.max(R, Math.hypot(p[0], p[1], p[2]));
     const n = norm([rand(-1, 1), rand(-1, 1), rand(-1, 1)]);
-    const next = clip(faces, n, support(n) - rand(0.3, 1) * 0.3 * R / Math.sqrt(faces.length));
+    const next = cutAll(faces, n, support(n) - rand(0.3, 1) * 0.3 * R / Math.sqrt(faces.length));
     if (next.length >= faces.length * 0.8) faces = next; // skip a cut that would eat a big piece
   }
   return faces;
@@ -289,7 +315,7 @@ function halfPoly(P, m, d) { // keep the part with dot(p, m) <= d
     if (da <= 0) res.push(a);
     if ((da < 0 && db > 0) || (da > 0 && db < 0)) res.push(lerp3(a, b, da / (da - db)));
   }
-  return res;
+  return dedupe(res);
 }
 function polyArea(P) {
   let a = [0, 0, 0];
@@ -321,6 +347,81 @@ function splitFaces(faces, perFace) {
   return pieces;
 }
 
+// Mirror on: tiny rounding differences make the four mirrored parts of the crystal come out a little
+// different, so instead one quarter (x > 0, y > 0) is built and copied mirrored three times.
+// Every face lying across a mirror line is first cut along that line. In the quarter, every piece
+// bigger than the target size is cut through its centre, parallel to its longest edge (bands like a
+// step-cut gem); if that leaves a sliver, across it instead.
+// Each piece gets g: the quarter piece it was copied from, so twins can share a crop and an edge.
+function longestEdge(P) {
+  let bi = 0, bl = -1;
+  for (let i = 0; i < P.length; i++) {
+    const l = Math.hypot(...sub(P[(i + 1) % P.length], P[i]));
+    if (l > bl + 1e-9) { bl = l; bi = i; }
+  }
+  return bi;
+}
+function splitSym(faces, perFace) {
+  let pieces = faces.map((f) => ({ n: f.n, pts: f.pts, area: polyArea(f.pts) }));
+  const total = pieces.reduce((s, f) => s + f.area, 0);
+  for (const m of [[1, 0, 0], [0, 1, 0]]) {
+    const next = [];
+    for (const f of pieces) {
+      const A = halfPoly(f.pts, m, 0), B = halfPoly(f.pts, [-m[0], -m[1], -m[2]], 0);
+      const aA = A.length >= 3 ? polyArea(A) : 0, aB = B.length >= 3 ? polyArea(B) : 0;
+      if (aA > total * 1e-6 && aB > total * 1e-6) next.push({ n: f.n, pts: A, area: aA }, { n: f.n, pts: B, area: aB });
+      else next.push(f);
+    }
+    pieces = next;
+  }
+  pieces = pieces.filter((f) => { const c = centroid(f.pts); return c[0] > 0 && c[1] > 0; });
+  const quarter = [];
+  const limit = perFace <= 1 ? Infinity : total / (faces.length * perFace); // pieces larger than this get cut
+  for (let k = 0; pieces.length && k < faces.length * perFace * 8; k++) {
+    const f = pieces.pop();
+    if (f.area <= limit) { quarter.push(f); continue; }
+    const P = f.pts, i = longestEdge(P), c = centroid(P);
+    const u = norm(sub(P[(i + 1) % P.length], P[i]));
+    let done = false;
+    for (const m of [cross(f.n, u), u]) {
+      const d = dot(c, m);
+      const A = halfPoly(P, m, d), B = halfPoly(P, [-m[0], -m[1], -m[2]], -d);
+      if (A.length < 3 || B.length < 3) continue;
+      const aA = polyArea(A), aB = polyArea(B);
+      if (Math.min(aA, aB) < f.area * 0.15) continue;
+      pieces.push({ n: f.n, pts: A, area: aA }, { n: f.n, pts: B, area: aB });
+      done = true;
+      break;
+    }
+    if (!done) quarter.push(f);
+  }
+  quarter.push(...pieces);
+  const out = [];
+  quarter.forEach((f, g) => {
+    const n = f.pts.length, e = longestEdge(f.pts);
+    for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+      const m = (p) => [p[0] * sx, p[1] * sy, p[2]];
+      let pts = f.pts.map(m), pe = e;
+      if (sx * sy < 0) { // one flip turns the face inside out: list the corners backwards to keep them counter-clockwise
+        pts = pts.reverse();
+        pe = (2 * n - 2 - e) % n; // corners e, e+1 now sit at n-1-e, n-2-e
+      }
+      out.push({ n: m(f.n), pts, area: f.area, g, e: pe });
+    }
+  });
+  return out;
+}
+// centre of the polygon's area (unlike the plain corner average, a doubled corner does not move it)
+function centroid(P) {
+  let s = [0, 0, 0], w = 0;
+  for (let i = 1; i < P.length - 1; i++) {
+    const a = Math.hypot(...cross(sub(P[i], P[0]), sub(P[i + 1], P[0])));
+    for (let k = 0; k < 3; k++) s[k] += a * (P[0][k] + P[i][k] + P[i + 1][k]) / 3;
+    w += a;
+  }
+  return w > 0 ? s.map((v) => v / w) : P[0];
+}
+
 // each piece gets its own random bit of the video; trim scales how much of the video one bit covers
 // (knob 1 -> a sliver, 100 -> about the whole picture)
 const trimFrom = (v) => 0.9 * Math.pow(v / 100, 1.3);
@@ -329,13 +430,25 @@ function newCrop() {
   return [rand(0.08, 0.92), rand(0.08, 0.92), rand(0, Math.PI * 2), trim * rand(0.5, 1)];
 }
 
-let faces = [], pieces = [], crops = [], radius = 1.45; // radius: farthest corner, used to fit the crystal on screen
+let faces = [], pieces = [], crops = [], edges = [], radius = 1.45; // radius: farthest corner, used to fit the crystal on screen
+let sym = true;
+// edges[i]: the edge of piece i the streaks run along. Mirror twins (same g) share one crop and
+// use the mirrored copy of the quarter piece's longest edge (f.e, set in splitSym).
+function newLook() {
+  const groupCrop = new Map();
+  crops = pieces.map((f) => {
+    if (f.g === undefined) return newCrop();
+    if (!groupCrop.has(f.g)) groupCrop.set(f.g, newCrop());
+    return groupCrop.get(f.g);
+  });
+  edges = pieces.map((f) => f.g === undefined ? Math.floor(Math.random() * f.pts.length) : f.e);
+}
 function buildMesh() {
   const tris = [];
   pieces.forEach((f, fi) => {
-    const P = f.pts;
+    const P = f.pts, e = edges[fi];
     const c = P.reduce((s, p) => [s[0] + p[0] / P.length, s[1] + p[1] / P.length, s[2] + p[2] / P.length], [0, 0, 0]);
-    const t = norm(sub(P[0], c)), b = cross(f.n, t);
+    const b = norm(sub(P[(e + 1) % P.length], P[e])), t = cross(b, f.n);
     let r = 1e-6;
     for (const p of P) r = Math.max(r, Math.hypot(...sub(p, c)));
     const loc = P.map((p) => [dot(sub(p, c), t) / r, dot(sub(p, c), b) / r]);
@@ -352,16 +465,16 @@ function buildMesh() {
 
 let cutCount = 16, perFace = 4;
 function reSplit() {
-  pieces = splitFaces(faces, perFace);
-  crops = pieces.map(newCrop);
+  pieces = sym ? splitSym(faces, perFace) : splitFaces(faces, perFace);
+  newLook();
   buildMesh();
 }
 function newShape() {
-  faces = makeCrystal(cutCount);
+  faces = makeCrystal(cutCount, sym);
   reSplit();
 }
 function reCrop() {
-  crops = pieces.map(newCrop);
+  newLook();
   buildMesh();
 }
 
@@ -487,7 +600,7 @@ let drag = null;
 // one finger rotates; two fingers pinch to move closer or farther
 let zoom = 1;
 const ZOOM_MIN = 0.35;
-let zoomMax = 8; // set each frame: how close the camera may get before entering the crystal
+let zoomMax = 8; // set each frame (in perspective view: how close the camera may get before entering the crystal)
 const setZoom = (z) => { zoom = Math.max(ZOOM_MIN, Math.min(zoomMax, z)); return zoom !== z; };
 const touches = new Map(); // pointerId -> {x, y}
 let pinch = null;
@@ -553,12 +666,17 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 // ---------- controls ----------
 let squash = 0;
 function setStreak(v) {
-  // 0 -> plain crop, 100 -> the crop is 1/60 as tall as it is wide
-  squash = Math.pow(1 / 60, v / 100);
+  // 0 -> plain crop, 99 -> squeezed to about 1/400, 100 -> pure lines (one row of the picture)
+  squash = v >= 100 ? 0 : Math.pow(1 / 400, v / 100);
   $('streakOut').textContent = v;
 }
-setStreak(85);
+setStreak(95);
 $('streak').addEventListener('input', (ev) => setStreak(+ev.target.value));
+let glass = 0.4, flat = true;
+function setGlass(v) { glass = v / 100; $('glassOut').textContent = v; }
+$('glass').addEventListener('input', (ev) => setGlass(+ev.target.value));
+$('flat').addEventListener('click', (ev) => { flat = !flat; ev.currentTarget.classList.toggle('on', flat); });
+$('mirror').addEventListener('click', (ev) => { sym = !sym; ev.currentTarget.classList.toggle('on', sym); newShape(); });
 $('cuts').addEventListener('input', (ev) => { $('cutsOut').textContent = ev.target.value; });
 $('cuts').addEventListener('change', (ev) => { cutCount = +ev.target.value; newShape(); });
 $('split').addEventListener('input', (ev) => { $('splitOut').textContent = ev.target.value; });
@@ -591,6 +709,10 @@ function mul(a, b) {
 function perspective(fovy, aspect, near, far) {
   const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
   return new Float32Array([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0]);
+}
+function ortho(halfW, halfH, near, far) {
+  const nf = 1 / (near - far);
+  return new Float32Array([1 / halfW, 0, 0, 0, 0, 1 / halfH, 0, 0, 0, 0, 2 * nf, 0, 0, 0, (far + near) * nf, 1]);
 }
 function rotation(yawA, pitchA) {
   const cy = Math.cos(yawA), sy = Math.sin(yawA), cp = Math.cos(pitchA), sp = Math.sin(pitchA);
@@ -632,12 +754,14 @@ function frame(now) {
   const usableH = Math.max(viewH - dockH, viewH * 0.4);
   const aspect = viewW / viewH;
   const fitH = usableH / viewH;  // the crystal should fit in the part above the dock
-  // pinch zoom moves the camera; it stops just short of the crystal's surface
+  // perspective view: pinch zoom moves the camera; it stops just short of the crystal's surface
   const fitDist = radius / (Math.tan(FOV / 2) * Math.min(aspect, fitH)) * 1.08;
-  zoomMax = Math.min(8, fitDist / (radius + 0.12));
+  // Flat: no perspective, the crystal reads as a flat graphic. Zoom then just scales the picture.
+  zoomMax = flat ? 8 : Math.min(8, fitDist / (radius + 0.12));
   zoom = Math.min(zoom, zoomMax);
-  const dist = fitDist / zoom;
-  const proj = perspective(FOV, aspect, 0.1, 100);
+  const dist = flat ? fitDist : fitDist / zoom;
+  const halfH = fitDist * Math.tan(FOV / 2) / zoom;
+  const proj = flat ? ortho(halfH * aspect, halfH, 0.1, 100) : perspective(FOV, aspect, 0.1, 100);
   const R = rotation(yaw, pitch);
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -dist, 1]);
   const mvp = mul(proj, mul(view, R));
@@ -648,6 +772,21 @@ function frame(now) {
   gl.uniform1f(U.uSquash, squash);
   gl.uniform1f(U.uShift, shift);
   gl.uniform1f(U.uMirror, mirror ? 1 : 0);
+  // Glass: draw the inside (back faces) first, then the front faces partly see-through over them,
+  // so the facets behind show through like light bent inside a gem.
+  gl.enable(gl.CULL_FACE);
+  if (glass > 0) {
+    gl.disable(gl.BLEND);
+    gl.cullFace(gl.FRONT);
+    gl.uniform1f(U.uAlpha, 1);
+    gl.drawArrays(gl.TRIANGLES, 0, vertCount);
+    gl.enable(gl.BLEND);
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  } else {
+    gl.disable(gl.BLEND);
+  }
+  gl.cullFace(gl.BACK);
+  gl.uniform1f(U.uAlpha, 1 - glass * 0.8);
   gl.drawArrays(gl.TRIANGLES, 0, vertCount);
 }
 if (prog) {
@@ -655,7 +794,8 @@ if (prog) {
   requestAnimationFrame(frame);
 }
 
-if (TEST) window.__cc = { get faces() { return faces; }, get pieces() { return pieces; }, get zoom() { return zoom; }, newShape, reCrop, setStreak, setZoom };
+if (TEST) window.__cc = { get faces() { return faces; }, get pieces() { return pieces; }, get zoom() { return zoom; }, newShape, reCrop, setStreak, setZoom, setGlass,
+  set flat(v) { flat = v; }, set sym(v) { sym = v; }, set angle(a) { yaw = a[0]; pitch = a[1]; vYaw = 0; vPitch = 0; } };
 </script>
 </body>
 </html>
