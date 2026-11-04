@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
@@ -42,6 +42,14 @@ html, body {
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
 }
 #dock.show { display: block; }
+#dock { transition: transform .3s ease; }
+#dock.min { transform: translateY(100%); }
+#toggle {
+  position: absolute; right: max(16px, env(safe-area-inset-right, 0px)); top: -48px;
+  min-height: 40px; padding: 0 14px; border-radius: 12px; background: var(--bar);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+#dock.min #toggle { top: calc(-48px - env(safe-area-inset-bottom, 0px)); }
 .line { display: flex; gap: 8px; align-items: center; }
 .line + .line { margin-top: 4px; }
 .line button { flex: 1; }
@@ -50,7 +58,7 @@ button {
   border: 1px solid var(--edge); border-radius: 14px; min-height: 56px; padding: 0 8px;
 }
 button.on { background: var(--hot); border-color: var(--hot); color: #fff; }
-label.knob { flex: 1; display: grid; grid-template-columns: 2.6em 1fr 3em; gap: 10px; align-items: center; min-height: 36px; }
+label.knob { flex: 1; display: grid; grid-template-columns: 3.6em 1fr 2.4em; gap: 10px; align-items: center; min-height: 36px; }
 label.knob output { text-align: right; color: var(--mute); font-variant-numeric: tabular-nums; }
 label.knob input { width: 100%; height: 36px; accent-color: var(--hot); }
 </style>
@@ -62,31 +70,32 @@ label.knob input { width: 100%; height: 36px; accent-color: var(--hot); }
 
 <div id="start">
   <h1>Camera Crystal</h1>
-  <p>カメラを選ぶと、映像をランダムに切り抜いて多面体の面に貼った結晶ができます。ドラッグで回し、ピンチで寄ったり引いたりできます。映像はこの端末の外に出ません。</p>
-  <button data-facing="user">インカメラ</button>
-  <button data-facing="environment">アウトカメラ</button>
+  <p>Pick a camera. Random crops of the live picture are pasted onto the faces of a crystal. Drag to turn it, pinch to zoom. The video never leaves this device.</p>
+  <button data-facing="user">Front camera</button>
+  <button data-facing="environment">Back camera</button>
   <div id="err"></div>
 </div>
 
 <div id="dock">
+  <button id="toggle" aria-expanded="true">Hide</button>
   <div class="line">
-    <button data-facing="user">イン</button>
-    <button data-facing="environment">アウト</button>
-    <button id="shape">形</button>
-    <button id="crop">貼替</button>
-    <button id="freeze">止める</button>
+    <button data-facing="user">Front</button>
+    <button data-facing="environment">Back</button>
+    <button id="shape">Shape</button>
+    <button id="crop">Remix</button>
+    <button id="freeze">Freeze</button>
   </div>
   <div class="line">
-    <label class="knob"><span>筋</span><input id="streak" type="range" min="0" max="100" step="1" value="85"><output id="streakOut">85</output></label>
+    <label class="knob"><span>Streak</span><input id="streak" type="range" min="0" max="100" step="1" value="85"><output id="streakOut">85</output></label>
   </div>
   <div class="line">
-    <label class="knob"><span>切抜</span><input id="trim" type="range" min="1" max="100" step="1" value="20"><output id="trimOut">20</output></label>
+    <label class="knob"><span>Crop</span><input id="trim" type="range" min="1" max="100" step="1" value="20"><output id="trimOut">20</output></label>
   </div>
   <div class="line">
-    <label class="knob"><span>面数</span><input id="cuts" type="range" min="6" max="300" step="1" value="16"><output id="cutsOut">16</output></label>
+    <label class="knob"><span>Faces</span><input id="cuts" type="range" min="6" max="300" step="1" value="16"><output id="cutsOut">16</output></label>
   </div>
   <div class="line">
-    <label class="knob"><span>割り</span><input id="split" type="range" min="1" max="8" step="1" value="4"><output id="splitOut">4</output></label>
+    <label class="knob"><span>Split</span><input id="split" type="range" min="1" max="8" step="1" value="4"><output id="splitOut">4</output></label>
   </div>
 </div>
 
@@ -147,7 +156,7 @@ const U = {};
 let vbo = null, vertCount = 0;
 const FLOATS = 9; // pos3, local2, crop4
 if (!gl) {
-  showError('この端末のブラウザーは WebGL2 に対応していないため表示できません。');
+  showError('This browser does not support WebGL2, so the crystal cannot be shown.');
 } else {
   try {
     const compile = (type, id) => {
@@ -165,7 +174,7 @@ if (!gl) {
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   } catch (e) {
     prog = null;
-    showError('描画の準備に失敗しました（' + e.message + '）。');
+    showError('Could not set up drawing (' + e.message + ').');
   }
 }
 if (prog) {
@@ -399,10 +408,10 @@ function makeTestStream() {
 
 function explain(e) {
   const n = e && e.name;
-  if (n === 'NotAllowedError' || n === 'SecurityError') return 'カメラの使用が許可されませんでした。ブラウザーの設定でこのページのカメラを許可してから、もう一度ボタンを押してください。';
-  if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'このカメラが見つかりませんでした。もう一方のカメラを試してください。';
-  if (n === 'NotReadableError' || n === 'AbortError') return 'カメラを開けませんでした。ほかのアプリがカメラを使っていないか確かめてください。';
-  return 'カメラを開けませんでした（' + (n || 'エラー') + '）。';
+  if (n === 'NotAllowedError' || n === 'SecurityError') return 'Camera access was not allowed. Allow the camera for this page in your browser settings, then press the button again.';
+  if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'This camera was not found. Try the other one.';
+  if (n === 'NotReadableError' || n === 'AbortError') return 'Could not open the camera. Check that no other app is using it.';
+  return 'Could not open the camera (' + (n || 'error') + ').';
 }
 
 // Some phones hand back a camera that will not open (a depth or tele camera), or still hold
@@ -442,7 +451,7 @@ function openCamera(want) {
     req = Promise.resolve(makeTestStream());
   } else {
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showError('カメラは HTTPS のページでしか使えません。https:// で始まるアドレスで開き直してください。');
+      showError('The camera only works on HTTPS pages. Open this page again from an https:// address.');
       return;
     }
     stopStream(); // release the old camera first (iOS cannot hold two)
@@ -461,7 +470,7 @@ function openCamera(want) {
     startEl.classList.add('hide');
     dock.classList.add('show');
     for (const b of dock.querySelectorAll('[data-facing]')) b.classList.toggle('on', b.dataset.facing === facing);
-    if (!hint.dataset.done) { hint.textContent = 'ドラッグで回す／ピンチで寄る'; hint.style.opacity = 1; }
+    if (!hint.dataset.done) { hint.textContent = 'Drag to turn · pinch to zoom'; hint.style.opacity = 1; }
   }).catch((e) => {
     if ((e && e.stale) || seq !== openSeq) return; // a newer request is in charge
     stopStream();
@@ -556,11 +565,16 @@ $('split').addEventListener('input', (ev) => { $('splitOut').textContent = ev.ta
 $('split').addEventListener('change', (ev) => { perFace = +ev.target.value; reSplit(); });
 $('trim').addEventListener('input', (ev) => { $('trimOut').textContent = ev.target.value; });
 $('trim').addEventListener('change', (ev) => { trim = trimFrom(+ev.target.value); reCrop(); });
+$('toggle').addEventListener('click', (ev) => {
+  const min = dock.classList.toggle('min');
+  ev.currentTarget.textContent = min ? 'Controls' : 'Hide';
+  ev.currentTarget.setAttribute('aria-expanded', String(!min));
+});
 $('shape').addEventListener('click', newShape);
 $('crop').addEventListener('click', reCrop);
 $('freeze').addEventListener('click', (ev) => {
   frozen = !frozen;
-  ev.currentTarget.textContent = frozen ? '動かす' : '止める';
+  ev.currentTarget.textContent = frozen ? 'Play' : 'Freeze';
   ev.currentTarget.classList.toggle('on', frozen);
 });
 
@@ -614,7 +628,7 @@ function frame(now) {
     pitch = Math.max(-1.3, Math.min(1.3, pitch + vPitch * dt));
   }
 
-  const dockH = dock.offsetHeight || 0;
+  const dockH = dock.classList.contains('min') ? 0 : dock.offsetHeight || 0; // hidden controls: use the whole screen
   const usableH = Math.max(viewH - dockH, viewH * 0.4);
   const aspect = viewW / viewH;
   const fitH = usableH / viewH;  // the crystal should fit in the part above the dock
