@@ -43,16 +43,16 @@ html, body {
 }
 #dock.show { display: block; }
 .line { display: flex; gap: 8px; align-items: center; }
-.line + .line { margin-top: 8px; }
+.line + .line { margin-top: 4px; }
 .line button { flex: 1; }
 button {
   font: inherit; color: var(--ink); background: rgba(255,255,255,.08); touch-action: manipulation;
   border: 1px solid var(--edge); border-radius: 14px; min-height: 56px; padding: 0 8px;
 }
 button.on { background: var(--hot); border-color: var(--hot); color: #fff; }
-label.knob { flex: 1; display: grid; grid-template-columns: 2.6em 1fr 3em; gap: 10px; align-items: center; min-height: 44px; }
+label.knob { flex: 1; display: grid; grid-template-columns: 2.6em 1fr 3em; gap: 10px; align-items: center; min-height: 36px; }
 label.knob output { text-align: right; color: var(--mute); font-variant-numeric: tabular-nums; }
-label.knob input { width: 100%; height: 40px; accent-color: var(--hot); }
+label.knob input { width: 100%; height: 36px; accent-color: var(--hot); }
 </style>
 </head>
 <body>
@@ -80,7 +80,13 @@ label.knob input { width: 100%; height: 40px; accent-color: var(--hot); }
     <label class="knob"><span>筋</span><input id="streak" type="range" min="0" max="100" step="1" value="85"><output id="streakOut">85</output></label>
   </div>
   <div class="line">
+    <label class="knob"><span>切抜</span><input id="trim" type="range" min="1" max="100" step="1" value="20"><output id="trimOut">20</output></label>
+  </div>
+  <div class="line">
     <label class="knob"><span>面数</span><input id="cuts" type="range" min="6" max="300" step="1" value="16"><output id="cutsOut">16</output></label>
+  </div>
+  <div class="line">
+    <label class="knob"><span>割り</span><input id="split" type="range" min="1" max="8" step="1" value="4"><output id="splitOut">4</output></label>
   </div>
 </div>
 
@@ -264,15 +270,60 @@ function makeCrystal(target) {
   return faces;
 }
 
-// each face gets its own random piece of the video
-function newCrop() {
-  return [rand(0.2, 0.8), rand(0.2, 0.8), rand(0, Math.PI * 2), rand(0.45, 0.9)];
+// Each face is split again inside its own plane into a few pieces (still convex polygons).
+// The biggest piece is always split next, so the pieces end up about the same size.
+function halfPoly(P, m, d) { // keep the part with dot(p, m) <= d
+  const res = [];
+  for (let i = 0; i < P.length; i++) {
+    const a = P[i], b = P[(i + 1) % P.length];
+    const da = dot(a, m) - d, db = dot(b, m) - d;
+    if (da <= 0) res.push(a);
+    if ((da < 0 && db > 0) || (da > 0 && db < 0)) res.push(lerp3(a, b, da / (da - db)));
+  }
+  return res;
+}
+function polyArea(P) {
+  let a = [0, 0, 0];
+  for (let i = 1; i < P.length - 1; i++) {
+    const c = cross(sub(P[i], P[0]), sub(P[i + 1], P[0]));
+    a = [a[0] + c[0], a[1] + c[1], a[2] + c[2]];
+  }
+  return Math.hypot(a[0], a[1], a[2]) / 2;
+}
+function splitFaces(faces, perFace) {
+  const pieces = faces.map((f) => ({ n: f.n, pts: f.pts, area: polyArea(f.pts) }));
+  const target = Math.round(faces.length * perFace);
+  for (let k = 0; pieces.length < target && k < target * 3; k++) {
+    let bi = 0;
+    for (let i = 1; i < pieces.length; i++) if (pieces[i].area > pieces[bi].area) bi = i;
+    const f = pieces[bi], P = f.pts;
+    const c = P.reduce((s, p) => [s[0] + p[0] / P.length, s[1] + p[1] / P.length, s[2] + p[2] / P.length], [0, 0, 0]);
+    // a cutting line inside the face: random direction, through a point near the centre
+    const t = norm(sub(P[0], c)), b = cross(f.n, t), ang = rand(0, Math.PI);
+    const dir = [t[0] * Math.cos(ang) + b[0] * Math.sin(ang), t[1] * Math.cos(ang) + b[1] * Math.sin(ang), t[2] * Math.cos(ang) + b[2] * Math.sin(ang)];
+    const m = cross(f.n, dir), d = dot(c, m) + rand(-0.2, 0.2) * Math.sqrt(f.area);
+    const A = halfPoly(P, m, d), B = halfPoly(P, [-m[0], -m[1], -m[2]], -d);
+    if (A.length < 3 || B.length < 3) continue;
+    const aA = polyArea(A), aB = polyArea(B);
+    if (Math.min(aA, aB) < f.area * 0.15) continue; // avoid slivers
+    pieces[bi] = { n: f.n, pts: A, area: aA };
+    pieces.push({ n: f.n, pts: B, area: aB });
+  }
+  return pieces;
 }
 
-let faces = [], crops = [], radius = 1.45; // radius: farthest corner, used to fit the crystal on screen
+// each piece gets its own random bit of the video; trim scales how much of the video one bit covers
+// (knob 1 -> a sliver, 100 -> about the whole picture)
+const trimFrom = (v) => 0.9 * Math.pow(v / 100, 1.3);
+let trim = trimFrom(20);
+function newCrop() {
+  return [rand(0.08, 0.92), rand(0.08, 0.92), rand(0, Math.PI * 2), trim * rand(0.5, 1)];
+}
+
+let faces = [], pieces = [], crops = [], radius = 1.45; // radius: farthest corner, used to fit the crystal on screen
 function buildMesh() {
   const tris = [];
-  faces.forEach((f, fi) => {
+  pieces.forEach((f, fi) => {
     const P = f.pts;
     const c = P.reduce((s, p) => [s[0] + p[0] / P.length, s[1] + p[1] / P.length, s[2] + p[2] / P.length], [0, 0, 0]);
     const t = norm(sub(P[0], c)), b = cross(f.n, t);
@@ -290,14 +341,18 @@ function buildMesh() {
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(tris), gl.STATIC_DRAW);
 }
 
-let cutCount = 16;
-function newShape() {
-  faces = makeCrystal(cutCount);
-  crops = faces.map(newCrop);
+let cutCount = 16, perFace = 4;
+function reSplit() {
+  pieces = splitFaces(faces, perFace);
+  crops = pieces.map(newCrop);
   buildMesh();
 }
+function newShape() {
+  faces = makeCrystal(cutCount);
+  reSplit();
+}
 function reCrop() {
-  crops = faces.map(newCrop);
+  crops = pieces.map(newCrop);
   buildMesh();
 }
 
@@ -497,6 +552,10 @@ setStreak(85);
 $('streak').addEventListener('input', (ev) => setStreak(+ev.target.value));
 $('cuts').addEventListener('input', (ev) => { $('cutsOut').textContent = ev.target.value; });
 $('cuts').addEventListener('change', (ev) => { cutCount = +ev.target.value; newShape(); });
+$('split').addEventListener('input', (ev) => { $('splitOut').textContent = ev.target.value; });
+$('split').addEventListener('change', (ev) => { perFace = +ev.target.value; reSplit(); });
+$('trim').addEventListener('input', (ev) => { $('trimOut').textContent = ev.target.value; });
+$('trim').addEventListener('change', (ev) => { trim = trimFrom(+ev.target.value); reCrop(); });
 $('shape').addEventListener('click', newShape);
 $('crop').addEventListener('click', reCrop);
 $('freeze').addEventListener('click', (ev) => {
@@ -582,7 +641,7 @@ if (prog) {
   requestAnimationFrame(frame);
 }
 
-if (TEST) window.__cc = { get faces() { return faces; }, get zoom() { return zoom; }, newShape, reCrop, setStreak, setZoom };
+if (TEST) window.__cc = { get faces() { return faces; }, get pieces() { return pieces; }, get zoom() { return zoom; }, newShape, reCrop, setStreak, setZoom };
 </script>
 </body>
 </html>
